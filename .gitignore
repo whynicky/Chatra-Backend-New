@@ -26,6 +26,18 @@ coverage.xml
 
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
+.hypothesis/
+.cache/
+.pytype/
+.pyre/
+.dmypy.json
+dmypy.json
+.python-version
+pip-wheel-metadata/
+junit.xml
+*.prof
 
 .env
 .env.*
@@ -45,15 +57,28 @@ google-services.json
 GoogleService-Info.plist
 
 .idea/
+.vscode/
+.fleet/
 *.iml
 *.iws
 *.ipr
+*.swp
+*.swo
+*~
 
 .DS_Store
 Thumbs.db
+._*
+.Spotlight-V100/
+.Trashes/
 
 *.log
 *.tmp
+*.temp
+*.orig
+*.rej
+*.pid
+*.sock
 *.sqlite
 *.db
 
@@ -70,3 +95,9 @@ backup_*.sql
 # Firebase service account (push-уведомления) — не коммитить
 *firebase-adminsdk*.json
 fcm-service-account*.json
+
+# Local AI/agent tooling and machine-specific credentials
+.agents/
+.claude/
+.codex/
+.aws/
