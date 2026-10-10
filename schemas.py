@@ -83,8 +83,11 @@ class ResetPasswordRequest(BaseModel):
 
 class Token(BaseModel):
     access_token: str
-    refresh_token: str
+    # Browser cookie mode deliberately omits the refresh credential from JSON.
+    # Flutter and other native clients keep the legacy body-token contract.
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
+    csrf_token: Optional[str] = None
 
 class RefreshRequest(BaseModel):
     refresh_token: str
@@ -565,5 +568,4 @@ class ReportResolve(BaseModel):
         if v is not None and v not in REPORT_RESOLUTIONS:
             raise ValueError(f"action must be one of {REPORT_RESOLUTIONS}")
         return v
-
 

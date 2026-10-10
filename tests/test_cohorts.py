@@ -1,7 +1,7 @@
 """Потоки (когорты) и переход учебного года: вступление в активный поток,
 read-only архив, изоляция потоков, сдвиг дедлайнов, черновики, ограничение
 «один активный поток», идемпотентность rollover."""
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -26,7 +26,23 @@ def _setup_class(client, db, teacher, deadline="2025-10-01T23:59:00"):
     return cls, assignment
 
 
-def _rollover(client, teacher, class_id, year="2026/2027", start="2026-09-01"):
+def _next_academic_year():
+    """Следующий учебный год относительно даты запуска теста.
+
+    Жёсткое 2026/2027 стало текущим учебным годом в сентябре 2026-го, и API
+    закономерно отвечал already_rolled. Тест проверяет rollover, а не
+    конкретный исторический год, поэтому строим всегда будущую границу.
+    """
+    today = date.today()
+    current_start = today.year if today.month >= 9 else today.year - 1
+    next_start = current_start + 1
+    return f"{next_start}/{next_start + 1}", date(next_start, 9, 1).isoformat()
+
+
+def _rollover(client, teacher, class_id, year=None, start=None):
+    default_year, default_start = _next_academic_year()
+    year = year or default_year
+    start = start or default_start
     client.patch(
         f"/api/classes/{class_id}/rotation-mode",
         json={"rotation_mode": "yearly"},
@@ -266,8 +282,8 @@ def test_rollover_shifts_deadlines_by_start_date_diff(client, db_session):
         .one()
     )
 
-    from datetime import date
-    new_start = date(2026, 9, 1)
+    _, next_start = _next_academic_year()
+    new_start = date.fromisoformat(next_start)
     result = _rollover(client, teacher, cls["id"], start=new_start.isoformat())
     assert result["deadlines_created"] == 1
 

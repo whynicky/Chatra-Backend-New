@@ -216,6 +216,28 @@ class User(Base):
         back_populates="students",
     )
 
+
+class RefreshSession(Base):
+    """Single-use server record for a refresh JWT.
+
+    A conditional update consumes the row during rotation. The JWT remains
+    stateless for normal validation, while this small record prevents replay
+    and makes explicit revocation possible without storing the credential.
+    """
+
+    __tablename__ = "refresh_sessions"
+
+    jti: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    client_type: Mapped[str] = mapped_column(String(16), nullable=False, default="native")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    replaced_by_jti: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+
 class Posts(Base):
     __tablename__ = "posts"
 

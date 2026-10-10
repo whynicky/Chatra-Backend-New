@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -29,12 +30,29 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(subject: str, token_version: int = 0, expires_minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-    payload = {"sub": subject, "exp": expire, "type": "access", "tv": token_version}
+    payload = {
+        "sub": subject,
+        "exp": expire,
+        "type": "access",
+        "tv": token_version,
+        # Avoid byte-identical access credentials when login/refresh happen in
+        # the same second; this also gives security logs a non-secret handle.
+        "jti": uuid.uuid4().hex,
+    }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-def create_refresh_token(subject: str, token_version: int = 0) -> str:
+def create_refresh_token(subject: str, token_version: int = 0, jti: str | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    payload = {"sub": subject, "exp": expire, "type": "refresh", "tv": token_version}
+    payload = {
+        "sub": subject,
+        "exp": expire,
+        "type": "refresh",
+        "tv": token_version,
+        # Every newly issued refresh token is individually tracked. Keeping the
+        # argument optional preserves call-site compatibility while ensuring a
+        # directly-created token is still replay-identifiable.
+        "jti": jti or uuid.uuid4().hex,
+    }
     return jwt.encode(payload, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
 
 def decode_token(token: str) -> dict:

@@ -23,32 +23,31 @@ from routers import auth, admin, users, posts, uploads, ai, notifications, push,
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
-from sqlalchemy import text
 from services.deadline_checker import deadline_checker_loop
 from services.deadline_reminder import deadline_reminder_loop
+from services.database_lifecycle import check_database_ready
 
 logging.basicConfig(level=logging.INFO)
-
-Base.metadata.create_all(bind=engine)
-
-def _check_db():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        logging.info("Database connection OK")
-    except Exception as e:
-        logging.error(f"Database connection failed: {e}")
-
-_check_db()
 
 # Схемы university/school не создаём: изоляция идёт по колонке org_type (BE-3).
 
 _cors_raw = os.getenv("CORS_ORIGINS", "*")
 _cors_origins = [o.strip() for o in _cors_raw.split(",")] if _cors_raw != "*" else ["*"]
-# "*" + credentials = отключённый CORS, поэтому с "*" работаем без credentials.
-# В проде задайте явный список в CORS_ORIGINS.
-_cors_credentials = _cors_origins != ["*"]
-if not _cors_credentials:
+# Cookie-сессия требует credentialed CORS. В локальной разработке разрешаем
+# loopback-origin с любым портом, чтобы Nuxt работал и на 3000, и на запасном
+# порту. В production по-прежнему нужен явный список origin'ов: wildcard не
+# превращаем в credentialed CORS и не открываем cookies произвольным сайтам.
+_app_env = os.getenv("APP_ENV", "development").lower()
+_cors_is_wildcard = _cors_origins == ["*"]
+_cors_local_regex = (
+    r"^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$"
+    if _cors_is_wildcard and _app_env != "production"
+    else None
+)
+if _cors_local_regex:
+    _cors_origins = []
+_cors_credentials = not _cors_is_wildcard or _cors_local_regex is not None
+if _cors_is_wildcard and _app_env == "production":
     logging.warning(
         "CORS_ORIGINS='*' — allow_credentials отключён. "
         "В проде задайте явный список origin'ов в CORS_ORIGINS."
@@ -56,13 +55,27 @@ if not _cors_credentials:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(deadline_checker_loop())
-    reminder_task = asyncio.create_task(deadline_reminder_loop())
+    # Readiness is explicit and read-only. Importing main no longer connects to
+    # or mutates the database; missing migrations fail startup with a clear error.
+    check_database_ready(engine, Base.metadata)
+    auth.validate_cookie_configuration()
+    tasks: list[asyncio.Task] = []
+    if os.getenv("BACKGROUND_JOBS_ENABLED", "0").lower() in {"1", "true", "yes"}:
+        logging.warning(
+            "Background jobs are running inside this API process. Enable this "
+            "on exactly one single-worker process; production should use "
+            "scripts/run_background_jobs.py instead."
+        )
+        tasks = [
+            asyncio.create_task(deadline_checker_loop()),
+            asyncio.create_task(deadline_reminder_loop()),
+        ]
     try:
         yield
     finally:
-        for t in (task, reminder_task):
+        for t in tasks:
             t.cancel()
+        for t in tasks:
             try:
                 await t
             except asyncio.CancelledError:
@@ -85,8 +98,13 @@ class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
             signed = sign_uploads_in_text(body.decode("utf-8")).encode("utf-8")
         except UnicodeDecodeError:
             signed = body
+        # Set-Cookie is a repeatable header. Converting all headers straight to
+        # a dict collapses refresh + CSRF cookies into one value, so preserve
+        # every instance and append them after rebuilding the signed response.
+        set_cookie_headers = response.headers.getlist("set-cookie")
         headers = dict(response.headers)
         headers.pop("content-length", None)
+        headers.pop("set-cookie", None)
         # Персональные списки сдач и оценок нельзя восстанавливать из HTTP-
         # кэша: оценка часто появляется уже после первого открытия страницы.
         # no-store заодно исключает сохранение авторизованных JSON-ответов на
@@ -97,12 +115,15 @@ class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
             vary_values = {v.strip() for v in vary.split(",") if v.strip()}
             vary_values.update({"Authorization", "Origin"})
             headers["Vary"] = ", ".join(sorted(vary_values))
-        return Response(
+        rebuilt = Response(
             content=signed,
             status_code=response.status_code,
             headers=headers,
             media_type=ctype,
         )
+        for cookie_header in set_cookie_headers:
+            rebuilt.headers.append("set-cookie", cookie_header)
+        return rebuilt
 
 
 class _UploadsSkippingGZipMiddleware(GZipMiddleware):
@@ -126,6 +147,7 @@ app.add_middleware(UploadUrlSignerMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_local_regex,
     allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],

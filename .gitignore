@@ -31,6 +31,19 @@ coverage.xml
 .env.*
 !.env.example
 
+# Private keys and provider credentials. Public certificates (*.crt/*.cer)
+# may be committed when intentionally required; private key material may not.
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+service_account*.json
+google-services.json
+GoogleService-Info.plist
+
 .idea/
 *.iml
 *.iws
@@ -50,6 +63,9 @@ uploads/*
 *.sql
 !migrations/*.sql
 backup_*.sql
+*.dump
+*.backup
+*.bak
 
 # Firebase service account (push-уведомления) — не коммитить
 *firebase-adminsdk*.json

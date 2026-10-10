@@ -97,4 +97,8 @@ py migrations/add_submission_student_index.py
 # задание без конкретной даты сдачи.
 sql migrations/025_deadline_no_deadline.sql
 
+# 026: single-use refresh sessions for web HttpOnly-cookie migration and
+# native-client replay protection. Additive table/index creation only.
+sql migrations/026_refresh_sessions.sql
+
 echo 'SUCCESS: all schema changes required by the current code are complete.'

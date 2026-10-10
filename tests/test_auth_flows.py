@@ -1,7 +1,11 @@
 """Тесты продуктовых auth-флоу: нормализация email, уникальность по (email,
 org_type), верификация email кодом, восстановление пароля, отзыв токенов
 (logout / смена пароля), удаление аккаунта, блокировка."""
-from security import decode_token
+from datetime import datetime, timedelta, timezone
+
+from jose import jwt
+
+from security import ALGORITHM, REFRESH_SECRET_KEY, decode_token
 from tests.conftest import make_user
 
 
@@ -86,7 +90,11 @@ def test_forgot_and_reset_password(client):
     _register_and_verify(client, "fp@x.com")
     old = _login(client, "fp@x.com").json()
     dev = client.post("/api/auth/forgot-password", json={"email": "fp@x.com"}).json()
-    assert dev["sent"] is True
+    # В тестовой среде реальный почтовый транспорт намеренно выключен:
+    # sent честно описывает доставку, а OTP_DEBUG даёт код для продолжения
+    # сценария без сети и без писем реальным адресатам.
+    assert dev["sent"] is False
+    assert "dev_code" in dev
     code = dev["dev_code"]
 
     r = client.post("/api/auth/reset-password",
@@ -119,6 +127,7 @@ def test_reset_password_invalid_code_rejected(client):
 def test_change_password_revokes_old_token_and_issues_new(client):
     login = _register_and_verify(client, "cp@x.com")
     old_access = login["access_token"]
+    old_refresh = login["refresh_token"]
 
     bad = client.post("/api/auth/change-password",
                       json={"current_password": "wrong", "new_password": "newpassword1"},
@@ -133,6 +142,7 @@ def test_change_password_revokes_old_token_and_issues_new(client):
     new_access = ok.json()["access_token"]
 
     assert client.get("/api/auth/me", headers=_bearer(old_access)).status_code == 401
+    assert client.post("/api/auth/refresh", json={"refresh_token": old_refresh}).status_code == 401
     assert client.get("/api/auth/me", headers=_bearer(new_access)).status_code == 200
     assert _login(client, "cp@x.com", "password123").status_code == 401
     assert _login(client, "cp@x.com", "newpassword1").status_code == 200
@@ -146,6 +156,130 @@ def test_logout_revokes_refresh_token(client):
 
     assert client.post("/api/auth/logout", headers=_bearer(access)).status_code == 204
     assert client.get("/api/auth/me", headers=_bearer(access)).status_code == 401
+    assert client.post("/api/auth/refresh", json={"refresh_token": refresh}).status_code == 401
+
+
+def test_native_refresh_rotates_and_rejects_replay(client):
+    tokens = _register_and_verify(client, "rotate-native@x.com")
+    first = tokens["refresh_token"]
+
+    rotated = client.post("/api/auth/refresh", json={"refresh_token": first})
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["refresh_token"] != first
+
+    replay = client.post("/api/auth/refresh", json={"refresh_token": first})
+    assert replay.status_code == 401
+    assert replay.json()["detail"] == "Refresh token already used or revoked"
+
+
+def test_legacy_refresh_bridges_once_to_cookie_session(client):
+    tokens = _register_and_verify(client, "legacy-cookie@x.com")
+    subject = decode_token(tokens["access_token"])["sub"]
+    legacy = jwt.encode(
+        {
+            "sub": subject,
+            "type": "refresh",
+            "tv": 0,
+            "exp": datetime.now(timezone.utc) + timedelta(days=1),
+        },
+        REFRESH_SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+    bridged = client.post(
+        "/api/auth/refresh?session=cookie", json={"refresh_token": legacy}
+    )
+    assert bridged.status_code == 200, bridged.text
+    assert "refresh_token" not in bridged.json()
+    assert client.cookies.get("chatra_refresh")
+
+    replay = client.post("/api/auth/refresh", json={"refresh_token": legacy})
+    assert replay.status_code == 401
+    assert replay.json()["detail"] == "Refresh token already used or revoked"
+
+
+def test_expired_refresh_token_is_rejected(client):
+    tokens = _register_and_verify(client, "expired-refresh@x.com")
+    subject = decode_token(tokens["access_token"])["sub"]
+    expired = jwt.encode(
+        {
+            "sub": subject,
+            "type": "refresh",
+            "tv": 0,
+            "exp": datetime.now(timezone.utc) - timedelta(seconds=1),
+        },
+        REFRESH_SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+    response = client.post("/api/auth/refresh", json={"refresh_token": expired})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or expired refresh token"
+
+
+def test_cookie_session_hides_refresh_and_enforces_csrf(client):
+    _register_and_verify(client, "cookie@x.com")
+    login = client.post(
+        "/api/auth/login",
+        params={"org_type": "university", "session": "cookie"},
+        data={"username": "cookie@x.com", "password": "password123"},
+    )
+    assert login.status_code == 200, login.text
+    payload = login.json()
+    assert "refresh_token" not in payload
+    assert payload["csrf_token"]
+    cookie_headers = login.headers.get_list("set-cookie")
+    refresh_header = next(h for h in cookie_headers if h.startswith("chatra_refresh="))
+    assert "HttpOnly" in refresh_header
+    assert "Path=/api/auth" in refresh_header
+    assert "SameSite=lax" in refresh_header
+
+    missing = client.post("/api/auth/refresh", params={"session": "cookie"})
+    assert missing.status_code == 403
+    mismatch = client.post(
+        "/api/auth/refresh",
+        params={"session": "cookie"},
+        headers={"X-CSRF-Token": "not-the-cookie-value"},
+    )
+    assert mismatch.status_code == 403
+
+    old_refresh = client.cookies.get("chatra_refresh")
+    refreshed = client.post(
+        "/api/auth/refresh",
+        params={"session": "cookie"},
+        headers={"X-CSRF-Token": payload["csrf_token"]},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert "refresh_token" not in refreshed.json()
+    assert refreshed.json()["access_token"] != payload["access_token"]
+
+    # The cookie was rotated; replaying its predecessor through the preserved
+    # Flutter/native body contract is rejected by the same session record.
+    replay = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert replay.status_code == 401
+
+
+def test_cookie_logout_requires_csrf_revokes_session_and_clears_cookie(client):
+    _register_and_verify(client, "cookie-logout@x.com")
+    login = client.post(
+        "/api/auth/login?session=cookie",
+        data={"username": "cookie-logout@x.com", "password": "password123"},
+    )
+    access = login.json()["access_token"]
+    csrf = login.json()["csrf_token"]
+    refresh = client.cookies.get("chatra_refresh")
+
+    rejected = client.post(
+        "/api/auth/logout?session=cookie", headers=_bearer(access)
+    )
+    assert rejected.status_code == 403
+
+    ok = client.post(
+        "/api/auth/logout?session=cookie",
+        headers={**_bearer(access), "X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 204
+    assert client.cookies.get("chatra_refresh") is None
     assert client.post("/api/auth/refresh", json={"refresh_token": refresh}).status_code == 401
 
 
