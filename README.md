@@ -1,9 +1,21 @@
-# Chatra Backend
+<div align="center">
 
-Бэкенд образовательной платформы Chatra: классы, потоки, задания,
-ИИ-оценивание и файлы — одним сервисом.
+# Chatra
 
-**Python 3.14 · FastAPI · SQLAlchemy 2.0 · PostgreSQL · OpenAI**
+**Backend**
+
+Классы, учебные потоки, задания и ИИ-оценивание — в одном сервисе.
+
+<p>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?style=flat-square">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?style=flat-square">
+  <img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0-D71F00?style=flat-square">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square">
+</p>
+
+<p><a href="#быстрый-старт">Быстрый старт</a> · <a href="#конфигурация">Конфигурация</a> · <a href="#возможности">Возможности</a> · <a href="#структура">Структура</a></p>
+
+</div>
 
 ---
 
@@ -219,3 +231,9 @@ tests/            pytest
 ```bash
 ./venv/bin/pytest
 ```
+
+---
+
+<div align="center">
+  <sub>© 2026 Chatra. All rights reserved.</sub>
+</div>
