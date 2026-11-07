@@ -22,6 +22,15 @@ class_members = Table(
     Column("user_id",  Integer, ForeignKey("users.id",  ondelete="CASCADE")),
 )
 
+class_pins = Table(
+    "class_pins",
+    Base.metadata,
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("class_id", Integer, ForeignKey("classes.id", ondelete="CASCADE"), primary_key=True, index=True),
+    Column("pinned", Boolean, nullable=False),
+    Column("pinned_at", DateTime, nullable=False),
+)
+
 # Членство в конкретном потоке (учебном годе) класса. class_members остаётся
 # и продолжает наполняться при вступлении (двойная запись) — её читают
 # permissions.py и легаси-скрипты; уберём отдельной задачей после переезда.

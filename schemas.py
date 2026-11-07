@@ -329,6 +329,14 @@ class ClassResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ClassPinImport(BaseModel):
+    class_ids: list[int] = Field(max_length=500)
+
+
+class ClassPinUpdate(BaseModel):
+    pinned: bool
+
+
 class CoverGenerateRequest(BaseModel):
     """Тело POST /classes/{id}/cover/generate. Собственного промпта у
     преподавателя нет намеренно: единый стиль коллекции держится тем, что

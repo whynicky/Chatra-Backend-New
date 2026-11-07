@@ -1,19 +1,23 @@
 import logging
+from datetime import timedelta
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 import schemas
 from crud import classes as crud
 from crud import cohorts as crud_cohorts
-from models import Class, Cohort, User, class_members, cohort_students
+from models import Class, Cohort, User, class_members, class_pins, cohort_students
 from db import get_db
 from deps import get_current_user, get_current_teacher, get_current_admin
-from permissions import require_class_owner, require_class_access
+from permissions import require_class_owner, require_class_access, student_class_ids, teacher_class_ids
 from services import ai_budget, cover_art, cover_generator
 from services.image_storage import convert_cover_with_thumbnail
 from services.rate_limit import RateLimiter
-from sqlalchemy import func, case
+from sqlalchemy import func, case, select
+from utils.time import utcnow
 
 router = APIRouter(prefix="/classes", tags=["Classes"])
 
@@ -206,6 +210,78 @@ def list_classes(
         for c in classes
     ]
     return result
+
+
+def _accessible_pin_ids(db: Session, current_user: User, ids: list[int]) -> set[int]:
+    if not ids:
+        return set()
+    if current_user.role == "admin":
+        return set(db.scalars(select(Class.id).where(Class.id.in_(ids), Class.org_type == current_user.org_type)))
+    if current_user.role == "teacher":
+        return teacher_class_ids(db, current_user.id, current_user.org_type).intersection(ids)
+    return student_class_ids(db, current_user.id, current_user.org_type).intersection(ids)
+
+
+def _insert_pins(db: Session):
+    return (pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert)(class_pins)
+
+
+@router.get("/pins", response_model=list[int])
+def list_class_pins(
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    ids = list(db.scalars(
+        select(class_pins.c.class_id)
+        .where(class_pins.c.user_id == current_user.id, class_pins.c.pinned.is_(True))
+        .order_by(class_pins.c.pinned_at, class_pins.c.class_id)
+    ))
+    accessible = _accessible_pin_ids(db, current_user, ids)
+    return [class_id for class_id in ids if class_id in accessible]
+
+
+@router.post("/pins/import", status_code=status.HTTP_204_NO_CONTENT)
+def import_class_pins(
+    body: schemas.ClassPinImport,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ids = list(dict.fromkeys(body.class_ids))
+    accessible = _accessible_pin_ids(db, current_user, ids)
+    now = utcnow()
+    rows = [
+        {"user_id": current_user.id, "class_id": class_id, "pinned": True,
+         "pinned_at": now + timedelta(microseconds=index)}
+        for index, class_id in enumerate(ids) if class_id in accessible
+    ]
+    if rows:
+        # An old browser may still have a pin that another device removed.
+        # Import fills missing rows without overwriting a server decision.
+        db.execute(_insert_pins(db).values(rows).on_conflict_do_nothing(
+            index_elements=[class_pins.c.user_id, class_pins.c.class_id],
+        ))
+        db.commit()
+
+
+@router.put("/pins/{class_id}", status_code=status.HTTP_204_NO_CONTENT)
+def set_class_pin(
+    body: schemas.ClassPinUpdate,
+    class_id: int = Path(gt=0, le=2_147_483_647),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_class_access(db, class_id, current_user)
+    stmt = _insert_pins(db).values(
+        user_id=current_user.id, class_id=class_id, pinned=body.pinned, pinned_at=utcnow(),
+    )
+    db.execute(stmt.on_conflict_do_update(
+        index_elements=[class_pins.c.user_id, class_pins.c.class_id],
+        set_={"pinned": stmt.excluded.pinned, "pinned_at": stmt.excluded.pinned_at},
+        where=class_pins.c.pinned != stmt.excluded.pinned,
+    ))
+    db.commit()
 
 
 @router.post("/", response_model=schemas.ClassResponse, status_code=status.HTTP_201_CREATED)
