@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/readme-cover.webp" alt="Обложка Chatra с белой надписью, камнями и цветным стеклом на закате" width="100%" />
+</p>
+
 <div align="center">
 
 # Chatra
